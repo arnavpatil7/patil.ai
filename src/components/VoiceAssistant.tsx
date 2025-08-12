@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { WaveformVisualizer } from './WaveformVisualizer';
+import { supabase } from '@/integrations/supabase/client';
 
 interface VoiceAssistantProps {
   className?: string;
@@ -15,6 +16,8 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
   const [transcript, setTranscript] = useState('');
   const [response, setResponse] = useState('');
   const [isSupported, setIsSupported] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<Array<{role: string, content: string}>>([]);
+  const [needsApiKey, setNeedsApiKey] = useState(false);
   
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
@@ -72,10 +75,32 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
     setIsProcessing(true);
     
     try {
-      // Simple AI-like responses for common commands
-      let responseText = generateResponse(command.toLowerCase());
-      
+      // Call Supabase Edge Function for AI processing
+      const { data, error } = await supabase.functions.invoke('chat', {
+        body: { 
+          message: command,
+          conversationHistory: conversationHistory 
+        }
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data.success && data.error?.includes('API key')) {
+        setNeedsApiKey(true);
+        throw new Error('OpenAI API key not configured');
+      }
+
+      const responseText = data.response;
       setResponse(responseText);
+
+      // Update conversation history
+      setConversationHistory(prev => [
+        ...prev,
+        { role: 'user', content: command },
+        { role: 'assistant', content: responseText }
+      ]);
       
       // Speak the response
       if (synthRef.current) {
@@ -88,7 +113,13 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
       
     } catch (error) {
       console.error('Error processing command:', error);
-      const errorResponse = "I'm sorry, I encountered an error processing your request.";
+      let errorResponse = "I'm sorry, I encountered an error processing your request.";
+      
+      if (error.message?.includes('API key')) {
+        errorResponse = "I need an OpenAI API key to provide intelligent responses. Please configure your API key to continue.";
+        setNeedsApiKey(true);
+      }
+      
       setResponse(errorResponse);
       
       if (synthRef.current) {
@@ -100,75 +131,6 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
     }
   };
 
-  const generateResponse = (command: string): string => {
-    // Simple command processing - can be enhanced with real AI integration
-    if (command.includes('hello') || command.includes('hi')) {
-      return "Hello! I'm your personal voice assistant. How can I help you today?";
-    }
-    
-    if (command.includes('time')) {
-      const now = new Date();
-      return `The current time is ${now.toLocaleTimeString()}.`;
-    }
-    
-    if (command.includes('date')) {
-      const now = new Date();
-      return `Today is ${now.toLocaleDateString('en-US', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      })}.`;
-    }
-    
-    if (command.includes('weather')) {
-      return "I'd love to help with the weather, but I need to be connected to a weather service. For now, I recommend checking your local weather app.";
-    }
-    
-    if (command.includes('remind') || command.includes('reminder')) {
-      return "I've noted your reminder request. In a full implementation, I would set up notifications for you.";
-    }
-    
-    if (command.includes('play music') || command.includes('play song')) {
-      return "I'd be happy to play music for you. In a full implementation, I would connect to your music streaming service.";
-    }
-    
-    if (command.includes('calculate') || command.includes('math')) {
-      return "I can help with calculations. Try asking me specific math questions like 'what is 25 times 4?'";
-    }
-    
-    if (command.includes('search') || command.includes('look up')) {
-      return "I can help you search for information. In a full implementation, I would perform web searches and provide results.";
-    }
-    
-    // Basic math operations
-    const mathMatch = command.match(/what is (\d+) (plus|minus|times|divided by) (\d+)/);
-    if (mathMatch) {
-      const [, num1, operation, num2] = mathMatch;
-      const a = parseInt(num1);
-      const b = parseInt(num2);
-      let result = 0;
-      
-      switch (operation) {
-        case 'plus':
-          result = a + b;
-          break;
-        case 'minus':
-          result = a - b;
-          break;
-        case 'times':
-          result = a * b;
-          break;
-        case 'divided by':
-          result = a / b;
-          break;
-      }
-      
-      return `${a} ${operation} ${b} equals ${result}.`;
-    }
-    
-    return "I heard you say: '" + command + "'. I'm still learning, but I can help with time, date, simple math, and basic commands. What would you like me to do?";
-  };
 
   const toggleListening = () => {
     if (!isSupported || !recognitionRef.current) {
@@ -209,10 +171,10 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
       {/* Header */}
       <div className="text-center space-y-4">
         <h1 className="text-4xl md:text-6xl font-bold gradient-text">
-          Voice Assistant
+          Nova AI
         </h1>
         <p className="text-xl text-muted-foreground max-w-2xl">
-          Your personal AI assistant that works on any device. Press the microphone and speak your command.
+          Your advanced AI assistant powered by OpenAI. Ask questions, get explanations, solve problems, and have natural conversations.
         </p>
       </div>
 
@@ -278,28 +240,59 @@ export const VoiceAssistant = ({ className }: VoiceAssistantProps) => {
         </div>
       )}
 
+      {/* API Key Setup Notice */}
+      {needsApiKey && (
+        <div className="w-full max-w-2xl">
+          <Card className="p-6 border-destructive bg-destructive/5">
+            <h3 className="font-semibold text-destructive mb-4">🔑 OpenAI API Key Required</h3>
+            <p className="text-muted-foreground mb-4">
+              To enable advanced AI conversations like Nova AI, you need to configure your OpenAI API key in Supabase Edge Function Secrets.
+            </p>
+            <div className="text-sm space-y-2">
+              <p><strong>Steps:</strong></p>
+              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                <li>Go to your Supabase project dashboard</li>
+                <li>Navigate to Edge Functions → Secrets</li>
+                <li>Add secret: <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code></li>
+                <li>Get your key from <a href="https://platform.openai.com/api-keys" target="_blank" className="text-primary underline">OpenAI API Keys</a></li>
+                <li>Refresh this page after adding the key</li>
+              </ol>
+            </div>
+          </Card>
+        </div>
+      )}
+
       {/* Quick Commands */}
       <div className="w-full max-w-4xl">
         <Card className="p-6">
-          <h3 className="font-semibold text-lg mb-4">Try these commands:</h3>
+          <h3 className="font-semibold text-lg mb-4">Try asking Nova AI:</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"Hello"</strong> - Greet the assistant
+              <strong>"Explain quantum physics"</strong> - Get detailed explanations
             </div>
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"What time is it?"</strong> - Get current time
+              <strong>"Write a poem about space"</strong> - Creative writing
             </div>
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"What's the date?"</strong> - Get today's date
+              <strong>"Help me plan my day"</strong> - Personal assistance
             </div>
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"What is 25 times 4?"</strong> - Simple math
+              <strong>"Solve this math problem"</strong> - Complex calculations
             </div>
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"Remind me to..."</strong> - Set reminders
+              <strong>"Give me coding advice"</strong> - Programming help
             </div>
             <div className="p-3 bg-muted rounded-lg">
-              <strong>"Play music"</strong> - Music commands
+              <strong>"What's the capital of..."</strong> - Knowledge questions
+            </div>
+            <div className="p-3 bg-muted rounded-lg">
+              <strong>"Tell me a joke"</strong> - Entertainment
+            </div>
+            <div className="p-3 bg-muted rounded-lg">
+              <strong>"Analyze this situation"</strong> - Thoughtful analysis
+            </div>
+            <div className="p-3 bg-muted rounded-lg">
+              <strong>"Brainstorm ideas for..."</strong> - Creative assistance
             </div>
           </div>
         </Card>
